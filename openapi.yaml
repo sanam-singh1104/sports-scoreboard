@@ -1,0 +1,329 @@
+openapi: 3.0.3
+info:
+  title: Sports League Scoreboard API
+  description: >
+    API for managing a single sports league: teams, recorded match results,
+    and the calculated standings table (3-1-0 scoring). See product-spec.md
+    for the full product spec. Standings are always derived from recorded
+    matches, never edited directly.
+  version: 0.1.0
+servers:
+  - url: /api
+    description: Base path for all endpoints
+
+tags:
+  - name: teams
+    description: Manage league teams
+  - name: matches
+    description: Record and list match results
+  - name: standings
+    description: Calculated league table
+
+paths:
+  /teams:
+    get:
+      tags: [teams]
+      summary: List all teams
+      operationId: listTeams
+      responses:
+        "200":
+          description: All teams in the league
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Team"
+              example:
+                - id: 1
+                  name: Riverside FC
+                - id: 6
+                  name: Iron Bridge
+    post:
+      tags: [teams]
+      summary: Add a new team
+      operationId: createTeam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeamCreate"
+            example:
+              name: Riverside FC
+      responses:
+        "201":
+          description: Team created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Team"
+              example:
+                id: 7
+                name: Riverside FC
+        "400":
+          description: Invalid input (e.g. missing or blank name)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A team with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /matches:
+    get:
+      tags: [matches]
+      summary: List all recorded matches
+      operationId: listMatches
+      responses:
+        "200":
+          description: >
+            All recorded matches. Clients typically sort by matchday and
+            date for display; the API returns them unsorted.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Match"
+              example:
+                - id: 1
+                  homeTeamId: 1
+                  awayTeamId: 2
+                  homeScore: 3
+                  awayScore: 1
+                  date: "2026-08-02"
+                  matchday: 1
+    post:
+      tags: [matches]
+      summary: Record a match result
+      operationId: createMatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MatchCreate"
+            example:
+              homeTeamId: 1
+              awayTeamId: 2
+              homeScore: 3
+              awayScore: 1
+              date: "2026-08-02"
+              matchday: 1
+      responses:
+        "201":
+          description: Match recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Match"
+              example:
+                id: 10
+                homeTeamId: 1
+                awayTeamId: 2
+                homeScore: 3
+                awayScore: 1
+                date: "2026-08-02"
+                matchday: 1
+        "400":
+          description: >
+            Invalid input - e.g. homeTeamId equals awayTeamId, a negative
+            score, a matchday less than 1, or a reference to a team that
+            does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /standings:
+    get:
+      tags: [standings]
+      summary: Get the calculated league standings
+      operationId: getStandings
+      description: >
+        Standings are derived from all recorded matches using 3-1-0 scoring
+        (win = 3 points, draw = 1 point each, loss = 0 points). Rows are
+        ranked by total points, highest first. A team with no recorded
+        matches still appears, with all stats at zero. No tie-breakers
+        beyond total points are applied.
+      responses:
+        "200":
+          description: Standings table, ranked by points (highest first)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StandingsRow"
+              example:
+                - team:
+                    id: 1
+                    name: Riverside FC
+                  played: 4
+                  won: 4
+                  drawn: 0
+                  lost: 0
+                  points: 12
+                - team:
+                    id: 6
+                    name: Iron Bridge
+                  played: 0
+                  won: 0
+                  drawn: 0
+                  lost: 0
+                  points: 0
+
+components:
+  schemas:
+    Team:
+      type: object
+      description: A league team.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+          example: 1
+        name:
+          type: string
+          minLength: 1
+          example: Riverside FC
+      required:
+        - id
+        - name
+
+    TeamCreate:
+      type: object
+      description: Payload for adding a new team.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          example: Riverside FC
+      required:
+        - name
+
+    Match:
+      type: object
+      description: A recorded match result between two teams.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+          example: 1
+        homeTeamId:
+          type: integer
+          description: id of the home team
+          example: 1
+        awayTeamId:
+          type: integer
+          description: id of the away team; must differ from homeTeamId
+          example: 2
+        homeScore:
+          type: integer
+          minimum: 0
+          example: 3
+        awayScore:
+          type: integer
+          minimum: 0
+          example: 1
+        date:
+          type: string
+          format: date
+          description: Date the match was played
+          example: "2026-08-02"
+        matchday:
+          type: integer
+          minimum: 1
+          description: Round/matchday number
+          example: 1
+      required:
+        - id
+        - homeTeamId
+        - awayTeamId
+        - homeScore
+        - awayScore
+        - date
+        - matchday
+
+    MatchCreate:
+      type: object
+      description: Payload for recording a match result.
+      properties:
+        homeTeamId:
+          type: integer
+          example: 1
+        awayTeamId:
+          type: integer
+          example: 2
+        homeScore:
+          type: integer
+          minimum: 0
+          example: 3
+        awayScore:
+          type: integer
+          minimum: 0
+          example: 1
+        date:
+          type: string
+          format: date
+          example: "2026-08-02"
+        matchday:
+          type: integer
+          minimum: 1
+          example: 1
+      required:
+        - homeTeamId
+        - awayTeamId
+        - homeScore
+        - awayScore
+        - date
+        - matchday
+
+    StandingsRow:
+      type: object
+      description: A single team's row in the calculated standings table.
+      properties:
+        team:
+          $ref: "#/components/schemas/Team"
+        played:
+          type: integer
+          minimum: 0
+          example: 4
+        won:
+          type: integer
+          minimum: 0
+          example: 4
+        drawn:
+          type: integer
+          minimum: 0
+          example: 0
+        lost:
+          type: integer
+          minimum: 0
+          example: 0
+        points:
+          type: integer
+          minimum: 0
+          example: 12
+      required:
+        - team
+        - played
+        - won
+        - drawn
+        - lost
+        - points
+
+    Error:
+      type: object
+      description: Standard error response.
+      properties:
+        detail:
+          type: string
+          example: awayTeamId must be different from homeTeamId
+      required:
+        - detail
