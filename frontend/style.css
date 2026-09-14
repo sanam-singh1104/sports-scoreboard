@@ -201,6 +201,22 @@ button:hover {
   text-align: center;
 }
 
+.banner {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: var(--loss);
+  border-radius: var(--radius);
+  padding: 0.85rem 1.1rem;
+  font-size: 0.9rem;
+}
+
+.banner code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
 footer {
   text-align: center;
   color: var(--muted);

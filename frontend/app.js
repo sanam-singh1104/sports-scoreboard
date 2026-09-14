@@ -1,81 +1,103 @@
-// --- In-memory mock data (no backend yet) ---
+// Talks to the FastAPI backend defined in openapi.yaml. No local mock data
+// or client-side standings calculation any more - the backend is the
+// source of truth.
 
-let nextTeamId = 1;
-let nextMatchId = 1;
+const API_BASE = "http://localhost:8000/api";
 
-function makeTeam(name) {
-  return { id: nextTeamId++, name };
-}
+let teams = [];
+let matches = [];
+let standings = [];
 
-function makeMatch(homeTeamId, awayTeamId, homeScore, awayScore, date, matchday) {
-  return { id: nextMatchId++, homeTeamId, awayTeamId, homeScore, awayScore, date, matchday };
-}
+// --- API helpers ---
 
-const teams = [
-  makeTeam("Riverside FC"),
-  makeTeam("Oakwood United"),
-  makeTeam("Harbor City"),
-  makeTeam("Westside Rangers"),
-  makeTeam("Sunset Athletic"),
-  makeTeam("Iron Bridge"), // no matches yet - should show zeroed stats
-];
-
-const [riverside, oakwood, harbor, westside, sunset] = teams;
-
-const matches = [
-  makeMatch(riverside.id, oakwood.id, 3, 1, "2026-08-02", 1),
-  makeMatch(harbor.id, westside.id, 2, 2, "2026-08-02", 1),
-  makeMatch(sunset.id, riverside.id, 0, 1, "2026-08-02", 1),
-
-  makeMatch(oakwood.id, harbor.id, 1, 1, "2026-08-09", 2),
-  makeMatch(westside.id, sunset.id, 3, 0, "2026-08-09", 2),
-  makeMatch(riverside.id, westside.id, 2, 0, "2026-08-09", 2),
-
-  makeMatch(harbor.id, riverside.id, 1, 4, "2026-08-16", 3),
-  makeMatch(sunset.id, oakwood.id, 2, 2, "2026-08-16", 3),
-  makeMatch(westside.id, oakwood.id, 1, 3, "2026-08-23", 3),
-];
-
-// --- Standings calculation ---
-
-function computeStandings() {
-  const stats = new Map();
-  for (const team of teams) {
-    stats.set(team.id, { team, played: 0, won: 0, drawn: 0, lost: 0, points: 0 });
+async function apiRequest(path, options) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, options);
+  } catch (networkError) {
+    throw new ApiError(
+      `Could not reach the backend at ${API_BASE}. Is it running?`,
+      0
+    );
   }
 
-  for (const match of matches) {
-    const home = stats.get(match.homeTeamId);
-    const away = stats.get(match.awayTeamId);
-    if (!home || !away) continue;
-
-    home.played++;
-    away.played++;
-
-    if (match.homeScore > match.awayScore) {
-      home.won++;
-      home.points += 3;
-      away.lost++;
-    } else if (match.homeScore < match.awayScore) {
-      away.won++;
-      away.points += 3;
-      home.lost++;
-    } else {
-      home.drawn++;
-      away.drawn++;
-      home.points += 1;
-      away.points += 1;
+  if (!response.ok) {
+    let detail = `Request failed (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body && body.detail) detail = body.detail;
+    } catch (_) {
+      // response body wasn't JSON - fall back to the generic message
     }
+    throw new ApiError(detail, response.status);
   }
 
-  return Array.from(stats.values()).sort((a, b) => b.points - a.points);
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function apiGet(path) {
+  return apiRequest(path);
+}
+
+function apiPost(path, body) {
+  return apiRequest(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// --- Loading data from the backend ---
+
+async function loadAll() {
+  try {
+    const [teamsData, matchesData, standingsData] = await Promise.all([
+      apiGet("/teams"),
+      apiGet("/matches"),
+      apiGet("/standings"),
+    ]);
+    teams = teamsData;
+    matches = matchesData;
+    standings = standingsData;
+    hideConnectionBanner();
+  } catch (err) {
+    teams = [];
+    matches = [];
+    standings = [];
+    showConnectionBanner(err.message);
+  }
+  renderAll();
+}
+
+function showConnectionBanner(message) {
+  const banner = document.getElementById("connection-banner");
+  banner.textContent = message;
+  banner.hidden = false;
+}
+
+function hideConnectionBanner() {
+  const banner = document.getElementById("connection-banner");
+  banner.hidden = true;
+  banner.textContent = "";
 }
 
 // --- Rendering ---
 
 function renderStandings() {
   const tbody = document.getElementById("standings-body");
-  const standings = computeStandings();
+
+  if (standings.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No teams yet.</td></tr>`;
+    return;
+  }
 
   tbody.innerHTML = "";
   standings.forEach((row, index) => {
@@ -99,9 +121,9 @@ function renderTeamSelects() {
   const previousHome = homeSelect.value;
   const previousAway = awaySelect.value;
 
-  const options = teams
-    .map((team) => `<option value="${team.id}">${escapeHtml(team.name)}</option>`)
-    .join("");
+  const options = teams.length
+    ? teams.map((team) => `<option value="${team.id}">${escapeHtml(team.name)}</option>`).join("")
+    : `<option value="" disabled selected>Add a team first</option>`;
 
   homeSelect.innerHTML = options;
   awaySelect.innerHTML = options;
@@ -174,7 +196,7 @@ function showMessage(elementId, text, type) {
 
 // --- Form handlers ---
 
-document.getElementById("add-team-form").addEventListener("submit", (event) => {
+document.getElementById("add-team-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = document.getElementById("team-name");
   const name = input.value.trim();
@@ -183,18 +205,18 @@ document.getElementById("add-team-form").addEventListener("submit", (event) => {
     showMessage("add-team-message", "Please enter a team name.", "error");
     return;
   }
-  if (teams.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
-    showMessage("add-team-message", "A team with that name already exists.", "error");
-    return;
-  }
 
-  teams.push(makeTeam(name));
-  input.value = "";
-  renderAll();
-  showMessage("add-team-message", `Added "${name}".`, "success");
+  try {
+    await apiPost("/teams", { name });
+    input.value = "";
+    await loadAll();
+    showMessage("add-team-message", `Added "${name}".`, "success");
+  } catch (err) {
+    showMessage("add-team-message", err.message, "error");
+  }
 });
 
-document.getElementById("record-match-form").addEventListener("submit", (event) => {
+document.getElementById("record-match-form").addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const homeTeamId = Number(document.getElementById("home-team").value);
@@ -212,25 +234,28 @@ document.getElementById("record-match-form").addEventListener("submit", (event) 
     showMessage("record-match-message", "Home and away teams must be different.", "error");
     return;
   }
-  if (Number.isNaN(homeScore) || Number.isNaN(awayScore) || homeScore < 0 || awayScore < 0) {
-    showMessage("record-match-message", "Please enter valid, non-negative scores.", "error");
-    return;
-  }
   if (!date) {
     showMessage("record-match-message", "Please enter a date.", "error");
     return;
   }
-  if (!matchday || matchday < 1) {
-    showMessage("record-match-message", "Please enter a valid matchday number.", "error");
-    return;
-  }
 
-  matches.push(makeMatch(homeTeamId, awayTeamId, homeScore, awayScore, date, matchday));
-  event.target.reset();
-  renderAll();
-  showMessage("record-match-message", "Match recorded.", "success");
+  try {
+    await apiPost("/matches", {
+      homeTeamId,
+      awayTeamId,
+      homeScore,
+      awayScore,
+      date,
+      matchday,
+    });
+    event.target.reset();
+    await loadAll();
+    showMessage("record-match-message", "Match recorded.", "success");
+  } catch (err) {
+    showMessage("record-match-message", err.message, "error");
+  }
 });
 
 // --- Init ---
 
-renderAll();
+loadAll();
