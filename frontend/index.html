@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sports League Scoreboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Sports League Scoreboard</h1>
+    <p class="subtitle">Standings and results, calculated automatically from recorded matches.</p>
+  </header>
+
+  <main>
+    <section class="card" id="standings-section">
+      <h2>Standings</h2>
+      <table id="standings-table">
+        <thead>
+          <tr>
+            <th class="rank-col">#</th>
+            <th class="team-col">Team</th>
+            <th>P</th>
+            <th>W</th>
+            <th>D</th>
+            <th>L</th>
+            <th>Pts</th>
+          </tr>
+        </thead>
+        <tbody id="standings-body"></tbody>
+      </table>
+    </section>
+
+    <div class="two-col">
+      <section class="card" id="add-team-section">
+        <h2>Add Team</h2>
+        <form id="add-team-form">
+          <label for="team-name">Team name</label>
+          <input type="text" id="team-name" name="team-name" placeholder="e.g. Riverside FC" required>
+          <button type="submit">Add Team</button>
+          <p class="form-message" id="add-team-message"></p>
+        </form>
+      </section>
+
+      <section class="card" id="record-match-section">
+        <h2>Record Match</h2>
+        <form id="record-match-form">
+          <div class="field-row">
+            <div class="field">
+              <label for="home-team">Home team</label>
+              <select id="home-team" name="home-team" required></select>
+            </div>
+            <div class="field">
+              <label for="home-score">Home score</label>
+              <input type="number" id="home-score" name="home-score" min="0" required>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="away-team">Away team</label>
+              <select id="away-team" name="away-team" required></select>
+            </div>
+            <div class="field">
+              <label for="away-score">Away score</label>
+              <input type="number" id="away-score" name="away-score" min="0" required>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="match-date">Date</label>
+              <input type="date" id="match-date" name="match-date" required>
+            </div>
+            <div class="field">
+              <label for="matchday">Matchday</label>
+              <input type="number" id="matchday" name="matchday" min="1" required>
+            </div>
+          </div>
+          <button type="submit">Record Match</button>
+          <p class="form-message" id="record-match-message"></p>
+        </form>
+      </section>
+    </div>
+
+    <section class="card" id="matches-section">
+      <h2>Match History</h2>
+      <table id="matches-table">
+        <thead>
+          <tr>
+            <th>Matchday</th>
+            <th>Date</th>
+            <th>Home</th>
+            <th>Score</th>
+            <th>Away</th>
+          </tr>
+        </thead>
+        <tbody id="matches-body"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    <p>Prototype UI — data is stored in memory only and resets on reload.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
