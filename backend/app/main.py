@@ -1,9 +1,13 @@
 """FastAPI app implementing the API defined in openapi.yaml."""
 
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .models import Match, MatchCreate, StandingsRow, Team, TeamCreate
+from .sqlite_store import SqliteStore
 from .standings import compute_standings
 from .storage import InMemoryStore, Store
 
@@ -91,4 +95,15 @@ def create_app(store: Store | None = None) -> FastAPI:
     return app
 
 
-app = create_app()
+def _default_db_path() -> str:
+    """Resolved relative to this file (backend/scoreboard.db) rather than
+    the process's cwd, so it doesn't matter where uvicorn is launched from.
+    Override with SCOREBOARD_DB_PATH, e.g. to point at a different file.
+    """
+    env_path = os.environ.get("SCOREBOARD_DB_PATH")
+    if env_path:
+        return env_path
+    return str(Path(__file__).resolve().parent.parent / "scoreboard.db")
+
+
+app = create_app(SqliteStore(_default_db_path()))
