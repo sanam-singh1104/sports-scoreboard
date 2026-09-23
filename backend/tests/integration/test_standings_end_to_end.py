@@ -34,7 +34,7 @@ def test_full_season_flow_produces_correct_ranked_standings(client):
     riverside = _create_team(client, "Riverside FC")
     oakwood = _create_team(client, "Oakwood United")
     harbor = _create_team(client, "Harbor City")
-    iron_bridge = _create_team(client, "Iron Bridge")
+    _create_team(client, "Iron Bridge")
 
     _record(client, riverside, oakwood, 3, 1, matchday=1, day=2)
     _record(client, riverside, harbor, 2, 0, matchday=2, day=9)
