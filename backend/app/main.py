@@ -106,4 +106,17 @@ def _default_db_path() -> str:
     return str(Path(__file__).resolve().parent.parent / "scoreboard.db")
 
 
-app = create_app(SqliteStore(_default_db_path()))
+def _build_default_store() -> Store:
+    """DATABASE_URL selects Postgres - set by the `backend` service in
+    docker-compose.yml, pointing at the `db` service by name (not
+    localhost); otherwise falls back to the local SQLite file.
+    """
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        from .postgres_store import PostgresStore
+
+        return PostgresStore(database_url)
+    return SqliteStore(_default_db_path())
+
+
+app = create_app(_build_default_store())
