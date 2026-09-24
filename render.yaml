@@ -1,0 +1,33 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Deploys the FastAPI backend (from backend/Dockerfile) plus a managed
+# Postgres database. See docs/deployment.md for the step-by-step guide.
+
+services:
+  - type: web
+    name: sports-scoreboard-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/teams
+    autoDeploy: true
+    envVars:
+      # Render injects PORT itself; the Dockerfile's CMD binds uvicorn to it.
+      # main.py switches to PostgresStore whenever DATABASE_URL is set, and
+      # PostgresStore creates its tables on startup.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sports-scoreboard-db
+          property: connectionString
+
+databases:
+  - name: sports-scoreboard-db
+    plan: free
+    # Same region as the web service so it connects over Render's private
+    # network (connectionString is the internal URL).
+    region: oregon
+    databaseName: scoreboard
+    user: scoreboard
+    postgresMajorVersion: "16"
+    ipAllowList: [] # no external access; only Render services can connect
