@@ -11,9 +11,8 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     healthCheckPath: /api/teams
-    # Deploys are triggered by .github/workflows/deploy.yml (via the Deploy
-    # Hook) only after CI passes, so Render must not deploy every push itself.
-    autoDeploy: false
+    # Render deploys every push to main itself.
+    autoDeploy: true
     envVars:
       # Render injects PORT itself; the Dockerfile's CMD binds uvicorn to it.
       # main.py switches to PostgresStore whenever DATABASE_URL is set, and
