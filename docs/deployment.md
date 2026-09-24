@@ -82,9 +82,14 @@ setup as code, so Render creates everything in one step:
 
 ## Redeploying
 
-`autoDeploy: true` makes Render rebuild and redeploy on every push to
-`main`. To change the infrastructure (plans, region, env vars), edit
-`render.yaml` and push. Render syncs Blueprint changes automatically.
+Render's auto-deploy is off (`autoDeploy: false`). A push to `main`
+deploys only after CI passes: `.github/workflows/deploy.yml` then triggers
+Render through the service's Deploy Hook. That workflow needs a one-time
+setup of GitHub secrets. See [release-process.md](./release-process.md)
+for the setup, the full release flow, and how to roll back.
+
+To change the infrastructure (plans, region, env vars), edit `render.yaml`
+and push. Render syncs Blueprint changes automatically.
 
 ## Connecting the frontend
 
