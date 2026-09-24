@@ -1,82 +1,89 @@
 # Release Process
 
-Every release goes through the same pipeline. Merging or pushing to `main`
-is the release. Nothing reaches production unless CI passes.
+Pushing or merging to `main` is the release. Render deploys each push to
+`main` by itself (`autoDeploy: true` in `render.yaml`). At the same time,
+GitHub Actions runs CI, and after CI passes, a smoke test against the
+live URL.
 
 ```mermaid
 flowchart LR
-    A[Push / merge to main] --> B["CI workflow<br/>(ci.yml)"]
-    B -- fails --> X[Stop: nothing deployed]
-    B -- passes --> C["Deploy workflow<br/>(deploy.yml)"]
-    C --> D[Render Deploy Hook]
-    D --> E[Render builds backend/Dockerfile]
-    E --> F[Health check /api/teams]
-    F --> G[Live URL]
-    C -. waits for live, then smoke-tests .-> G
+    A[Push / merge to main] --> R[Render auto-deploy]
+    A --> B["CI workflow<br/>(ci.yml)"]
+    R --> H[Render health check /api/teams]
+    H --> G[Live URL]
+    B -- passes --> S["Post-deploy smoke test<br/>(deploy.yml)"]
+    S -. waits for commit live, then tests .-> G
+    B -- fails --> W["deploy.yml flags failure:<br/>roll back or fix"]
 ```
+
+> **Deploys aren't gated on CI.** Render starts building as soon as the
+> push lands and doesn't wait for tests. CI and the smoke test tell you
+> whether a release is good *after the fact*. That's why the pull
+> request step (running CI before merging) matters, and why a red run on
+> `main` means [rolling back](#rollback).
 
 ## 1. Push to `main`
 
 Work on a branch and open a pull request. CI runs on every push to every
-branch and on PRs, so you see test results before merging. Merging (or
-pushing directly) to `main` starts a release.
+branch and on PRs, so check that it's green **before** merging. That's
+the only point where a failing test can stop a release. Merging (or
+pushing directly) to `main` starts the release.
 
-## 2. CI runs the tests
+## 2. Render deploys
 
-`.github/workflows/ci.yml` (workflow name **CI**) has two jobs:
+Render sees the push, builds `backend/Dockerfile`, and starts the new
+container. Before sending traffic to it, Render health-checks
+`GET /api/teams`. If the build fails or the new container never becomes
+healthy, Render keeps serving the previous version, so a broken build
+can't take the site down.
+
+## 3. CI runs the tests
+
+At the same time, `.github/workflows/ci.yml` (workflow name **CI**) runs:
 
 | Job | What it checks |
 | --- | --- |
-| `test` | `ruff check .`, then the unit tests, then the integration tests against SQLite **and** a real Postgres 16 service container |
+| `test` | `ruff check .`, the unit tests, then the integration tests against SQLite **and** a real Postgres 16 service container |
 | `docker-build` | That `backend/Dockerfile` still builds |
 
-If either job fails, the release stops here. Render isn't contacted and
-the version currently running stays live. See [testing.md](./testing.md)
-for what the tests cover.
+See [testing.md](./testing.md) for what the tests cover.
 
-## 3. If green, deploy to Render
+## 4. If green, smoke-test the live URL
 
-`.github/workflows/deploy.yml` (workflow name **Deploy**) starts when CI
-finishes. Its deploy job runs only if that CI run **succeeded** and came
-from a **push to `main`**. It then:
+`.github/workflows/deploy.yml` (workflow name **Post-deploy smoke test**)
+starts when CI finishes for a push to `main`. **It doesn't deploy
+anything.**
 
-1. **Checks freshness.** If `main` has moved past the commit CI tested,
-   it skips the deploy. The newer commit has its own CI run and deploys
-   through that, so the pipeline never ships a commit that wasn't tested.
-2. **Triggers Render** by POSTing to the service's Deploy Hook.
-3. **Waits for the deploy to go live** by polling the Render API, and
-   fails if the build or start fails. This step needs the optional
-   `RENDER_API_KEY` secret.
-4. **Smoke-tests** the live URL (`GET /api/teams` and `/api/standings`),
-   retrying to allow for a free-tier cold start.
+- **CI passed:** the `smoke-test` job
+  1. waits until Render reports the tested commit as **live** (needs
+     `RENDER_API_KEY` and `RENDER_SERVICE_ID`, see below), and fails if
+     Render's build or deploy of that commit failed;
+  2. calls `GET /api/teams`, `/api/matches` and `/api/standings` on the
+     live URL, retrying to allow for a free-tier cold start.
+- **CI failed:** the `ci-failed` job fails with a warning. Render has
+  probably already deployed that commit, so either roll back or push a
+  fix.
 
-Render itself also health-checks `/api/teams` before sending traffic to
-the new version. If the new version fails to start, Render keeps serving
-the previous one.
+You can also run it by hand from **Actions → Post-deploy smoke test → Run
+workflow** to check the live service at any time.
 
-Render's own auto-deploy is turned **off** in `render.yaml`
-(`autoDeploy: false`). With it on, Render would build every push right
-away, in parallel with CI, and could ship a commit whose tests fail.
+### Configuration
 
-### One-time setup
+All of these are optional. Set them under **Settings → Secrets and
+variables → Actions**:
 
-In GitHub, go to **Settings → Secrets and variables → Actions**:
+| Kind | Name | Value |
+| --- | --- | --- |
+| Variable | `RENDER_SERVICE_URL` | Live URL. Defaults to `https://sports-scoreboard-api.onrender.com` |
+| Secret | `RENDER_API_KEY` | Render → **Account Settings → API Keys** |
+| Variable | `RENDER_SERVICE_ID` | `srv-...`, taken from the service's dashboard URL |
 
-| Kind | Name | Where to get it | Required |
-| --- | --- | --- | --- |
-| Secret | `RENDER_DEPLOY_HOOK_URL` | Render → `sports-scoreboard-api` → **Settings → Deploy Hook** | Yes. Without it, the Deploy job fails and nothing deploys. |
-| Secret | `RENDER_API_KEY` | Render → **Account Settings → API Keys** | Optional. Lets the job wait for "live" instead of only smoke-testing. |
-| Variable | `RENDER_SERVICE_URL` | The URL at the top of the service's Render page | Optional. Defaults to `https://sports-scoreboard-api.onrender.com`. |
+Without the API key and service ID, the job can't tell which commit is
+live. It waits a minute and then smoke-tests whatever is serving, which
+might still be the previous version. Set both for a real check of the new
+version.
 
-Treat the Deploy Hook URL like a password: anyone who has it can trigger
-a deploy. If it leaks, regenerate it in Render and update the secret.
-
-After syncing the Blueprint, go to the service's **Settings** in Render
-and confirm that **Auto-Deploy** shows **No**.
-
-## 4. The live URL
-
-The API is served at the web service URL, by default:
+## 5. The live URL
 
 ```
 https://sports-scoreboard-api.onrender.com
@@ -85,57 +92,50 @@ https://sports-scoreboard-api.onrender.com
 - `GET /api/teams`, `/api/matches`, `/api/standings`: the API
 - `/docs`: interactive OpenAPI docs
 
-The Deploy job's summary page in GitHub links to this URL (the
-`production` environment). The **Environments** section of the repo home
-page also shows what was deployed and when.
-
 ## Checking a release
 
-- **GitHub → Actions:** a green **CI** run followed by a green **Deploy**
-  run for the same commit means that commit is live.
-- **Render → service → Events / Deploys:** each deploy with its commit
-  and status.
-- **Render → service → Logs:** runtime logs from uvicorn.
+A release is good when all of these are true:
+
+- **GitHub → Actions:** **CI** is green, and **Post-deploy smoke test**
+  is green for the same commit.
+- **Render → service → Events / Deploys:** the commit shows as **Live**.
+- **Render → service → Logs:** no errors from uvicorn.
 
 ## Rollback
 
-Choose based on how urgent the problem is. Rolling back only changes
-**code**. The Postgres data isn't touched either way. See the note on the
-database below.
+Roll back when CI goes red on `main`, when the smoke test fails, or when
+you spot a bug in production. Rolling back only changes **code**. The
+Postgres data isn't touched either way (see
+[the database note](#database-and-rollbacks)).
 
 ### Option A: Instant rollback in Render (fastest)
 
-Use this when production is broken right now.
-
 1. Open Render → `sports-scoreboard-api` → **Events** (or **Deploys**).
-2. Find the last deploy that worked and click **Rollback** (or
-   **Redeploy**) on it.
-3. Render redeploys that exact earlier build. It doesn't rebuild or run
-   CI, so this takes seconds to a minute.
+2. Find the last deploy that worked and click **Rollback** on it.
+3. Render switches back to that exact earlier build. It doesn't rebuild,
+   so this takes seconds to a minute.
 
-This doesn't change `main`, so `main` still contains the bad commit. Follow
-up with Option B so the next release doesn't bring the bug back. Because
-auto-deploy is off, the rollback stays in place until the next successful
-CI + Deploy run.
+This doesn't change `main`, and with auto-deploy on, **the next push to
+`main` deploys whatever `main` contains**. Follow up right away with
+Option B so the bad commit isn't shipped again.
 
 ### Option B: Revert in git (permanent fix)
-
-This is the normal fix, and it goes through the full pipeline:
 
 ```sh
 git revert <bad-commit-sha>     # creates a new commit that undoes it
 git push origin main
 ```
 
-CI tests the revert, and if it passes, the Deploy workflow ships it. Use a
+Render auto-deploys the revert, and CI and the smoke test check it. Use a
 revert rather than `git reset` + force-push: history stays intact and
 there's a record of what was undone and why.
 
-### Option C: Redeploy a known-good commit manually
+### Option C: Pause deploys while you investigate
 
-Use this when you need an older version but Render's rollback list no
-longer has it. Revert back to that state on `main` (Option B, reverting
-each later commit) so the pipeline stays the only path to production.
+If you need to stop more pushes from going out, go to Render → service →
+**Settings → Auto-Deploy** and set it to **No** (or suspend the service).
+Remember to turn it back on afterwards. Note that the next Blueprint sync
+resets it to `autoDeploy: true` from `render.yaml`.
 
 ### Database and rollbacks
 
@@ -148,10 +148,11 @@ one later) so that code rollbacks stay safe.
 
 ## Summary
 
-| Step | Where | Gate |
+| Step | Where | What stops a bad release |
 | --- | --- | --- |
-| Push / merge to `main` | GitHub | Pull request review |
-| Lint + unit + integration tests + Docker build | `ci.yml` | Must pass |
-| Trigger deploy, wait for live, smoke test | `deploy.yml` | Runs only after CI succeeds |
-| Health check, switch traffic | Render | `/api/teams` must return 200 |
+| Pull request | GitHub | CI must be green before merging |
+| Push / merge to `main` | GitHub | Nothing. This is the release. |
+| Build and start | Render (auto-deploy) | Build failure or failed `/api/teams` health check keeps the old version |
+| Lint + unit + integration tests + Docker build | `ci.yml` | Red means roll back |
+| Wait for live, then smoke test | `deploy.yml` | Red means roll back |
 | Rollback | Render dashboard or `git revert` | Not applicable |

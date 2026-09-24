@@ -82,11 +82,12 @@ setup as code, so Render creates everything in one step:
 
 ## Redeploying
 
-Render's auto-deploy is off (`autoDeploy: false`). A push to `main`
-deploys only after CI passes: `.github/workflows/deploy.yml` then triggers
-Render through the service's Deploy Hook. That workflow needs a one-time
-setup of GitHub secrets. See [release-process.md](./release-process.md)
-for the setup, the full release flow, and how to roll back.
+`autoDeploy: true` makes Render rebuild and redeploy on every push to
+`main`. It doesn't wait for CI. After CI passes,
+`.github/workflows/deploy.yml` smoke-tests the live URL. It doesn't deploy
+anything itself. See [release-process.md](./release-process.md) for the
+full release flow, the optional settings for the smoke test, and how to
+roll back.
 
 To change the infrastructure (plans, region, env vars), edit `render.yaml`
 and push. Render syncs Blueprint changes automatically.

@@ -97,8 +97,10 @@ pull request:
    so every integration test runs on both SQLite **and** Postgres.
 6. In a separate job, builds the Docker image from `backend/Dockerfile`.
 
-A green CI run on `main` is what allows a deploy. See
-[release-process.md](./release-process.md).
+Render auto-deploys `main` without waiting for CI, so run CI on the pull
+request and check it's green before merging. A green CI run on `main`
+then triggers the post-deploy smoke test, and a red one means rolling
+back. See [release-process.md](./release-process.md).
 
 ## Adding tests
 

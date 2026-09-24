@@ -1,150 +1,130 @@
-# Deploy pipeline: push to main -> CI (ci.yml) -> this workflow -> Render.
+# Post-deploy verification: push to main -> CI (ci.yml) -> this workflow.
 #
 # Approach
 # --------
-# Deployment is gated on CI in GitHub Actions itself, not in Render:
+# Render deploys main by itself (`autoDeploy: true` in render.yaml): every
+# push to main is built and rolled out by Render, in parallel with CI. This
+# workflow does NOT deploy anything. It runs after CI finishes for a push to
+# main and:
 #
-#   * render.yaml sets `autoDeploy: false`, so a push to main does NOT deploy
-#     on its own. (With Render's auto-deploy on, Render would build every
-#     push immediately, in parallel with CI, and ship code whose tests fail.)
-#   * This workflow starts only when the "CI" workflow finishes a run for a
-#     push to main, and its deploy job runs only if that run succeeded -
-#     i.e. lint, unit tests, integration tests (SQLite + Postgres) and the
-#     Docker build all passed.
-#   * It then triggers Render through the service's Deploy Hook, waits for
-#     that deploy to go live (via the Render API), and smoke-tests the live
-#     URL. A failure at any step fails this workflow, which shows up on the
-#     commit and in the Actions tab.
+#   * CI passed  -> waits for Render to have that commit live (via the Render
+#                   API, if configured) and smoke-tests the live URL. A red
+#                   run here means the release is broken in production.
+#   * CI failed  -> Render has probably deployed that commit anyway, so it
+#                   fails loudly with a pointer to the rollback steps.
 #
-# Why not Render's own "deploy after checks pass" setting? It waits for
-# *every* check on the commit - including this workflow's - which would make
-# the two wait on each other. Keeping the gate here gives one visible
-# pipeline: CI -> Deploy.
+# Deploys are therefore not gated on CI - CI and this smoke test tell you
+# *whether* a release is good; see docs/release-process.md for rollback.
 #
-# One-time setup (Settings -> Secrets and variables -> Actions)
-# -------------------------------------------------------------
-#   Secret   RENDER_DEPLOY_HOOK_URL  Render service -> Settings -> Deploy Hook
-#                                    (required - without it nothing deploys)
-#   Secret   RENDER_API_KEY          Render Account Settings -> API Keys
-#                                    (optional - enables waiting for the
-#                                    deploy to reach "live"; without it the
-#                                    job only smoke-tests the URL)
-#   Variable RENDER_SERVICE_URL      e.g. https://sports-scoreboard-api.onrender.com
-#
-# See docs/release-process.md for the full release and rollback process.
+# Configuration (Settings -> Secrets and variables -> Actions), all optional
+# -------------------------------------------------------------------------
+#   Variable RENDER_SERVICE_URL  Live URL; default
+#                                https://sports-scoreboard-api.onrender.com
+#   Secret   RENDER_API_KEY      Render Account Settings -> API Keys
+#   Variable RENDER_SERVICE_ID   srv-... (in the service's dashboard URL)
+#     With both of these, the job waits until the tested commit is actually
+#     live before smoke-testing. Without them it smoke-tests whatever is
+#     live after a short wait, which may still be the previous version.
 
-name: Deploy
+name: Post-deploy smoke test
 
 on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
     branches: [main]
-  # Manual escape hatch, e.g. to redeploy main after changing a secret.
-  # Still redeploys main's latest commit, which CI has already checked.
+  # Re-check the live service by hand at any time.
   workflow_dispatch:
 
-# Never run two deploys at once; a newer run waits for the current one
-# instead of cancelling it mid-deploy.
 concurrency:
-  group: deploy-production
-  cancel-in-progress: false
+  group: post-deploy-smoke-test
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  SERVICE_URL: ${{ vars.RENDER_SERVICE_URL || 'https://sports-scoreboard-api.onrender.com' }}
+
 jobs:
-  deploy:
-    name: Deploy to Render
+  smoke-test:
+    name: Smoke-test live Render service
     runs-on: ubuntu-latest
-    # Gate: only after a *successful* CI run for a *push* to main (not a PR
-    # whose head branch happens to be named main).
+    # Only after a *successful* CI run for a *push* to main (not a PR whose
+    # head branch happens to be named main).
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push')
     environment:
       name: production
-      url: ${{ vars.RENDER_SERVICE_URL }}
+      url: ${{ vars.RENDER_SERVICE_URL || 'https://sports-scoreboard-api.onrender.com' }}
     env:
-      DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-      SERVICE_URL: ${{ vars.RENDER_SERVICE_URL || 'https://sports-scoreboard-api.onrender.com' }}
+      RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
       TESTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
     steps:
-      - name: Skip if main has moved past the tested commit
-        id: freshness
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Wait for Render to deploy the tested commit
+        if: env.RENDER_API_KEY != '' && env.RENDER_SERVICE_ID != ''
         run: |
-          # A deploy hook always deploys the branch's *latest* commit. If
-          # main has moved on since this CI run, that newer commit has its own
-          # CI run and will deploy through it - so skip rather than ship
-          # something untested.
-          head_sha=$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)
-          if [ "$head_sha" != "$TESTED_SHA" ]; then
-            echo "main is at $head_sha, CI tested $TESTED_SHA - newer run will deploy."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Deploying $TESTED_SHA"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Trigger Render deploy
-        id: trigger
-        if: steps.freshness.outputs.skip == 'false'
-        run: |
-          if [ -z "$DEPLOY_HOOK_URL" ]; then
-            echo "::error::RENDER_DEPLOY_HOOK_URL secret is not set - see the setup notes at the top of deploy.yml"
-            exit 1
-          fi
-          response=$(curl -fsS -X POST "$DEPLOY_HOOK_URL")
-          echo "Render response: $response"
-          # Hook URL looks like https://api.render.com/deploy/srv-XXXX?key=...
-          service_id=$(echo "$DEPLOY_HOOK_URL" | sed -E 's#.*/deploy/(srv-[^?]+).*#\1#')
-          deploy_id=$(echo "$response" | jq -r '.deploy.id // empty')
-          echo "service_id=$service_id" >> "$GITHUB_OUTPUT"
-          echo "deploy_id=$deploy_id" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for deploy to go live
-        if: steps.freshness.outputs.skip == 'false' && env.RENDER_API_KEY != '' && steps.trigger.outputs.deploy_id != ''
-        env:
-          SERVICE_ID: ${{ steps.trigger.outputs.service_id }}
-          DEPLOY_ID: ${{ steps.trigger.outputs.deploy_id }}
-        run: |
-          # Docker build + start on the free plan usually takes a few
-          # minutes; give up after 15.
+          # Render starts building on push, so by the time CI is done the
+          # deploy is usually in progress or already live. Give up after 15m.
           for i in $(seq 1 90); do
             status=$(curl -fsS \
               -H "Authorization: Bearer $RENDER_API_KEY" \
               -H "Accept: application/json" \
-              "https://api.render.com/v1/services/$SERVICE_ID/deploys/$DEPLOY_ID" \
-              | jq -r .status)
-            echo "[$i] deploy $DEPLOY_ID: $status"
+              "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys?limit=20" \
+              | jq -r --arg sha "$TESTED_SHA" \
+                  '[.[].deploy | select(.commit.id == $sha)][0].status // "not_started"')
+            echo "[$i] deploy of $TESTED_SHA: $status"
             case "$status" in
               live) exit 0 ;;
-              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
-                echo "::error::Render deploy $DEPLOY_ID ended with status $status"
+              deactivated)
+                # A newer commit replaced it - smoke-test what's live now.
+                echo "Superseded by a newer deploy."; exit 0 ;;
+              build_failed|update_failed|pre_deploy_failed|canceled)
+                echo "::error::Render deploy of $TESTED_SHA ended with status $status - the previous version is still serving"
                 exit 1 ;;
             esac
             sleep 10
           done
-          echo "::error::Timed out waiting for Render deploy $DEPLOY_ID"
+          echo "::error::Timed out waiting for Render to deploy $TESTED_SHA"
           exit 1
 
+      - name: Give Render time to roll out (no API key configured)
+        if: env.RENDER_API_KEY == '' || env.RENDER_SERVICE_ID == ''
+        run: |
+          echo "::notice::RENDER_API_KEY / RENDER_SERVICE_ID not set - can't confirm $TESTED_SHA is live; testing whatever is serving."
+          sleep 60
+
       - name: Smoke-test live URL
-        if: steps.freshness.outputs.skip == 'false'
         run: |
           # Free services may be asleep; retry to allow for cold start.
           for i in $(seq 1 30); do
             if curl -fsS --max-time 30 "$SERVICE_URL/api/teams" > /dev/null \
+               && curl -fsS --max-time 30 "$SERVICE_URL/api/matches" > /dev/null \
                && curl -fsS --max-time 30 "$SERVICE_URL/api/standings" > /dev/null; then
-              echo "Live at $SERVICE_URL"
+              echo "Live and healthy at $SERVICE_URL"
               exit 0
             fi
             echo "[$i] not healthy yet, retrying..."
             sleep 10
           done
-          echo "::error::$SERVICE_URL did not respond healthy"
+          echo "::error::$SERVICE_URL did not respond healthy - see docs/release-process.md#rollback"
+          exit 1
+
+  ci-failed:
+    name: Warn - CI failed on main
+    runs-on: ubuntu-latest
+    # Render auto-deploys regardless of CI, so a red CI run on main likely
+    # means untested code is live.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'push'
+    steps:
+      - name: Flag possible bad deploy
+        run: |
+          echo "::error::CI failed for ${{ github.event.workflow_run.head_sha }} on main, but Render auto-deploys every push - this commit is probably live. Roll back or push a fix: see docs/release-process.md#rollback"
           exit 1
